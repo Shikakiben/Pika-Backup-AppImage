@@ -6,7 +6,11 @@ ARCH=$(uname -m)
 
 echo "Installing package dependencies..."
 echo "---------------------------------------------------------------"
-pacman -Syu --noconfirm pika-backup
+pacman -Syu --noconfirm \
+            pika-backup \
+            xorg-server-xvfb \
+            curl \
+            wget
 
 echo "Installing debloated packages..."
 echo "---------------------------------------------------------------"
