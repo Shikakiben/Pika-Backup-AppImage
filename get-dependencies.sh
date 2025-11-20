@@ -4,12 +4,6 @@ set -eu
 
 ARCH=$(uname -m)
 
-
-echo "Initialisation de la clé pacman..."
-echo "---------------------------------------------------------------"
-pacman-key --init
-pacman-key --populate
-
 echo "Installing package dependencies..."
 echo "---------------------------------------------------------------"
 pacman -Syu --noconfirm \
