@@ -9,7 +9,7 @@
 
 * Official site: https://apps.gnome.org/en/PikaBackup/
 
-* [Latest Stable Release](https://github.com/Shikakiben/pika-backup-AppImage/releases/latest)
+* [Latest Stable Release](https://github.com/Shikakiben/Pika-Backup-AppImage/releases/latest)
 
 ---
 
