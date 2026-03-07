@@ -15,7 +15,7 @@ export DEPLOY_SYS_PYTHON=1
 
 quick-sharun /usr/bin/pika-backup \
              /usr/bin/borg \
-             /usr/lib/python3.13/site-packages/borg \
+             /usr/lib/python*/site-packages/borg \
              /usr/bin/ssh
 
 # Additional changes can be done in between here
