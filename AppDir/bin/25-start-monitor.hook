@@ -56,6 +56,40 @@ _write_if_changed() {
 	printf '%s\n' "$2" > "$1" 2>/dev/null || :
 }
 
+# ---------------------------------------------------------------------------
+#  Try every available way to (re)load the bus configuration.
+# ---------------------------------------------------------------------------
+_bus_reload() {
+	# 1) busctl (systemd) — most accurate for dbus-broker
+	if command -v busctl >/dev/null 2>&1; then
+		if busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
+		     org.freedesktop.DBus ReloadConfig >/dev/null 2>&1; then
+			return 0
+		fi
+	fi
+	# 2) gdbus (glib)
+	if command -v gdbus >/dev/null 2>&1; then
+		if gdbus call --session --dest org.freedesktop.DBus \
+		     --object-path /org/freedesktop/DBus \
+		     --method org.freedesktop.DBus.ReloadConfig >/dev/null 2>&1; then
+			return 0
+		fi
+	fi
+	# 3) dbus-send
+	if command -v dbus-send >/dev/null 2>&1; then
+		if dbus-send --session --type=method_call --dest=org.freedesktop.DBus \
+		     /org/freedesktop/DBus org.freedesktop.DBus.ReloadConfig \
+		     >/dev/null 2>&1; then
+			return 0
+		fi
+	fi
+	# 4) dbus-broker specific: ask systemd user manager to reload units
+	if command -v systemctl >/dev/null 2>&1; then
+		systemctl --user daemon-reload >/dev/null 2>&1 && return 0
+	fi
+	return 1
+}
+
 _install_entries() {
 	# Only meaningful for a real (non-extracted) AppImage: we need its path.
 	[ -n "$APPIMAGE" ] || return 0
@@ -80,13 +114,15 @@ X-GNOME-Autostart-Delay=90
 X-GNOME-UsesNotifications=true
 NoDisplay=true"
 
-	# 2) D-Bus activation -> the GUI's StartServiceByName succeeds. This
-	#    directory is watched by the session bus, so no reload is required.
-	_write_if_changed \
-	  "${XDG_DATA_HOME:-$HOME/.local/share}/dbus-1/services/org.gnome.World.PikaBackup.Monitor.service" \
+	# 2) D-Bus activation -> the GUI's StartServiceByName succeeds. Written
+	#    every run; then the bus is told to reload so the new file is picked
+	#    up (required by dbus-broker).
+	_service_file="${XDG_DATA_HOME:-$HOME/.local/share}/dbus-1/services/org.gnome.World.PikaBackup.Monitor.service"
+	_write_if_changed "$_service_file" \
 	  "[D-BUS Service]
 Name=org.gnome.World.PikaBackup.Monitor
 Exec=$_exec"
+	_bus_reload
 }
 
 # When the daemon itself is launched, just refresh the entries and let
