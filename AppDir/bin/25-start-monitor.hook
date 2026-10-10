@@ -1,0 +1,201 @@
+#!/bin/sh
+# ===========================================================================
+#  25-start-monitor.hook
+# ---------------------------------------------------------------------------
+#  Pika Backup's scheduled-backups daemon (pika-backup-monitor) must start at
+#  login when (and only when) the user actually schedules backups, and must
+#  also be startable on demand from the running GUI.
+#
+#  Native (Arch) installs /etc/xdg/autostart/...Monitor.desktop
+#  unconditionally; the OFFICIAL Flatpak registers the daemon only when a
+#  schedule is enabled (org.freedesktop.portal.Background). We follow the
+#  Flatpak semantics; an AppImage cannot use that portal, so this hook
+#  recreates the mechanism in the user's home (the only place it may write).
+#
+#  Three pieces:
+#
+#   1. ~/.local/share/dbus-1/services/<name>.service
+#        Makes the well-known name *activatable* so the GUI's
+#        StartServiceByName succeeds -- called when the user enables a
+#        schedule (schedule/event.rs -> utils::background_permission) and on
+#        window close during a running backup (app.rs). Written ALWAYS, then
+#        the bus is reloaded (dbus-broker needs it; dbus-daemon does not).
+#
+#   2. ~/.local/bin/pika-backup-monitor-autostart
+#        A tiny POSIX-sh wrapper run by the autostart entry. At every *boot*
+#        it reads ~/.config/pika-backup/backup.json and only execs the
+#        AppImage's monitor if a schedule is enabled. This makes the state
+#        correct at login WITHOUT launching the AppImage for nothing, using
+#        only sh/sed/awk (no host runtime dependency).
+#
+#   3. ~/.config/autostart/<name>.desktop
+#        Installed ALWAYS (cheap: it just runs the wrapper above), so there
+#        is no lag between enabling/disabling a schedule and the next boot.
+#
+#  The daemon is started for the CURRENT session only if a schedule is
+#  enabled. Activating a schedule while Pika is open works immediately via
+#  (1); it does not need a reboot.
+#
+#  NOTE: this file is SOURCED by AppRun.sh, therefore we use `return` and not
+#  `exit` (an `exit` would terminate AppRun.sh and the app would never start).
+# ===========================================================================
+
+# Are we being launched *as* the daemon? (via the autostart wrapper, or
+# directly as bin/pika-backup-monitor)
+_is_monitor_launch() {
+	case "${ARG0##*/}" in
+		pika-backup-monitor) return 0 ;;
+	esac
+	case "$1" in
+		pika-backup-monitor) return 0 ;;
+	esac
+	return 1
+}
+
+# Write $2 to $1 only if the content differs (avoids bumping mtime every run).
+_write_if_changed() {
+	if [ -f "$1" ] && [ "$(cat "$1" 2>/dev/null)" = "$2" ]; then
+		return 0
+	fi
+	mkdir -p "${1%/*}" 2>/dev/null || return 0
+	printf '%s\n' "$2" > "$1" 2>/dev/null || :
+}
+
+# Write $2 to $1, ensuring it is executable (used for the wrapper).
+_write_exec() {
+	if [ -f "$1" ] && [ -x "$1" ] && [ "$(cat "$1" 2>/dev/null)" = "$2" ]; then
+		return 0
+	fi
+	mkdir -p "${1%/*}" 2>/dev/null || return 0
+	printf '%s\n' "$2" > "$1" 2>/dev/null || return 0
+	chmod +x "$1" 2>/dev/null || :
+}
+
+# ---------------------------------------------------------------------------
+#  Try every available way to (re)load the bus configuration, so a .service
+#  written at runtime becomes activatable (dbus-broker requires this).
+# ---------------------------------------------------------------------------
+_bus_reload() {
+	if command -v busctl >/dev/null 2>&1; then
+		busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
+		  org.freedesktop.DBus ReloadConfig >/dev/null 2>&1 && return 0
+	fi
+	if command -v gdbus >/dev/null 2>&1; then
+		gdbus call --session --dest org.freedesktop.DBus \
+		  --object-path /org/freedesktop/DBus \
+		  --method org.freedesktop.DBus.ReloadConfig >/dev/null 2>&1 && return 0
+	fi
+	if command -v dbus-send >/dev/null 2>&1; then
+		dbus-send --session --type=method_call --dest=org.freedesktop.DBus \
+		  /org/freedesktop/DBus org.freedesktop.DBus.ReloadConfig \
+		  >/dev/null 2>&1 && return 0
+	fi
+	if command -v systemctl >/dev/null 2>&1; then
+		systemctl --user daemon-reload >/dev/null 2>&1 && return 0
+	fi
+	return 1
+}
+
+# ---------------------------------------------------------------------------
+#  Is at least one backup's schedule enabled? Pure sh/sed/awk, no runtime.
+# ---------------------------------------------------------------------------
+_SCHEDULE_AWK='
+	/"schedule"[ \t]*:[ \t]*\{/ { insched=1; depth=0; next }
+	insched {
+		if ($0 ~ /"enabled"[ \t]*:[ \t]*true/) found=1
+		depth += gsub(/\{/,"{") - gsub(/\}/,"}")
+		if (depth < 0) insched=0
+		next
+	}
+	END { if (found) print 1 }
+'
+
+_schedule_enabled() {
+	_cfg="${XDG_CONFIG_HOME:-$HOME/.config}/pika-backup/backup.json"
+	[ -f "$_cfg" ] || return 1
+	_v=$(sed 's/{/{\n/g; s/}/\n}/g' "$_cfg" 2>/dev/null | awk "$_SCHEDULE_AWK")
+	[ "$_v" = 1 ]
+}
+
+_monitor_name="org.gnome.World.PikaBackup.Monitor"
+
+# --- 1) D-Bus activation file (always) -> StartServiceByName works ----------
+_install_service() {
+	[ -n "$APPIMAGE" ] || return 0
+	case "$APPIMAGE" in
+		*[[:space:]]*) _exec="\"$APPIMAGE\" pika-backup-monitor" ;;
+		*)             _exec="$APPIMAGE pika-backup-monitor" ;;
+	esac
+	_write_if_changed \
+	  "${XDG_DATA_HOME:-$HOME/.local/share}/dbus-1/services/$_monitor_name.service" \
+	  "[D-BUS Service]
+Name=$_monitor_name
+Exec=$_exec"
+	_bus_reload
+}
+
+# --- 2) the boot wrapper + 3) the autostart entry (always) -----------------
+_install_autostart() {
+	[ -n "$APPIMAGE" ] || return 0
+	# Single-quote the AppImage path for the generated shell script.
+	case "$APPIMAGE" in
+		*\'*) _shpath="\"$APPIMAGE\"" ;;
+		*)    _shpath="'$APPIMAGE'" ;;
+	esac
+
+	_wrapper="${XDG_BIN_HOME:-$HOME/.local/bin}/pika-backup-monitor-autostart"
+	_write_exec "$_wrapper" "#!/bin/sh
+# Auto-generated by the Pika Backup AppImage. Do not edit.
+# Start the scheduled-backups daemon at login, but only if a backup schedule
+# is enabled, so nothing runs otherwise. Uses only sh/sed/awk.
+_cfg=\"\${XDG_CONFIG_HOME:-\$HOME/.config}/pika-backup/backup.json\"
+[ -f \"\$_cfg\" ] || exit 0
+_enabled=\$(sed 's/{/{\\n/g; s/}/\\n}/g' \"\$_cfg\" 2>/dev/null | awk '
+	/\"schedule\"[ \\t]*:[ \\t]*\\{/ { insched=1; depth=0; next }
+	insched {
+		if (\$0 ~ /\"enabled\"[ \\t]*:[ \\t]*true/) found=1
+		depth += gsub(/\\{/,\"{\") - gsub(/\\}/,\"}\")
+		if (depth < 0) insched=0
+		next
+	}
+	END { if (found) print 1 }
+')
+[ \"\$_enabled\" = 1 ] || exit 0
+exec $_shpath pika-backup-monitor"
+
+	_write_if_changed \
+	  "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/$_monitor_name.desktop" \
+	  "[Desktop Entry]
+Type=Application
+Name=Pika Backup Monitor
+Comment=Run scheduled backups for Pika Backup
+Exec=$_wrapper
+Icon=org.gnome.World.PikaBackup
+X-GNOME-Autostart-Delay=90
+X-GNOME-UsesNotifications=true
+NoDisplay=true"
+}
+
+# When the daemon itself is launched, refresh the entries and let AppRun.sh
+# run the daemon (do NOT start a second copy here).
+if _is_monitor_launch "$1"; then
+	_install_service
+	_install_autostart
+	return 0
+fi
+
+# Refresh/install the activation file, the boot wrapper and the autostart entry.
+_install_service
+_install_autostart
+
+# Start the daemon for the CURRENT session, but only if a schedule is enabled
+# (matching the Flatpak). Skipped if a live daemon is already recorded.
+_schedule_enabled || return 0
+
+_lock="${XDG_RUNTIME_DIR:-/tmp}/pika-backup-monitor.lock"
+if [ -r "$_lock" ] && kill -0 "$(cat "$_lock" 2>/dev/null)" 2>/dev/null; then
+	return 0
+fi
+
+pika-backup-monitor >/dev/null 2>&1 &
+echo "$!" > "$_lock" 2>/dev/null || :
