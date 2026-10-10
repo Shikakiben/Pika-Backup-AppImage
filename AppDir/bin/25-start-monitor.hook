@@ -7,21 +7,29 @@
 #    - XDG autostart: /etc/xdg/autostart/org.gnome.World.PikaBackup.Monitor.desktop
 #    - D-Bus activation: /usr/share/dbus-1/services/...Monitor.service
 #
-#  An AppImage cannot install either of those system-wide, so nothing ever
-#  starts the daemon and the UI reports:
-#    "The background process is inactive. It is required for scheduled backups."
+#  An AppImage cannot install either of those system-wide, so:
+#    - nothing ever starts the daemon -> the UI reports
+#      "The background process is inactive. It is required for scheduled
+#      backups." (the GUI only *observes* the well-known name
+#      org.gnome.World.PikaBackup.Monitor, see
+#      pika-backup/src/status.rs -> listen_remote_app_running);
+#    - activating a schedule calls D-Bus StartServiceByName (see
+#      pika-backup/src/utils.rs -> background_permission), which fails with
+#      org.freedesktop.DBus.Error.ServiceUnknown "... not provided by any
+#      .service files" because the session bus does not look into
+#      $APPDIR/share/dbus-1.
 #
-#  The GUI only *observes* the well-known name
-#  org.gnome.World.PikaBackup.Monitor on the session bus (see
-#  pika-backup/src/status.rs -> listen_remote_app_running); it never starts the
-#  daemon itself.
-#
-#  This hook does two things:
-#    1. registers an XDG autostart entry in ~/.config/autostart so the daemon
-#       is started at login (scheduled backups then work even if the GUI is
-#       never opened) -- the AppImage can only write to the user's home, which
-#       is exactly where a user-level autostart entry lives;
-#    2. starts the daemon right now, for the current session.
+#  This hook recreates both mechanisms in the user's home (the only place an
+#  AppImage may write):
+#    1. ~/.config/autostart/<name>.desktop
+#         -> starts the daemon at login, so scheduled backups run even if the
+#            GUI is never opened;
+#    2. ~/.local/share/dbus-1/services/<name>.service
+#         -> makes the well-known name *activatable*, so the GUI's
+#            StartServiceByName succeeds. This directory is monitored by the
+#            bus (inotify), so no reload/external tool is needed, and it is
+#            read at login.
+#    3. starts the daemon right now for the current session.
 #
 #  NOTE: this file is SOURCED by AppRun.sh, therefore we use `return` and not
 #  `exit` (an `exit` would terminate AppRun.sh and the app would never start).
@@ -39,20 +47,30 @@ _is_monitor_launch() {
 	return 1
 }
 
-_autostart_dir="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
-_autostart_file="$_autostart_dir/org.gnome.World.PikaBackup.Monitor.desktop"
+# Write $2 to $1 only if the content differs (avoids bumping mtime every run).
+_write_if_changed() {
+	if [ -f "$1" ] && [ "$(cat "$1" 2>/dev/null)" = "$2" ]; then
+		return 0
+	fi
+	mkdir -p "${1%/*}" 2>/dev/null || return 0
+	printf '%s\n' "$2" > "$1" 2>/dev/null || :
+}
 
-_install_autostart() {
+_install_entries() {
 	# Only meaningful for a real (non-extracted) AppImage: we need its path.
 	[ -n "$APPIMAGE" ] || return 0
 
-	# Quote the path for the .desktop Exec key if it contains spaces.
+	# Quote the path for the Exec key if it contains spaces.
 	case "$APPIMAGE" in
 		*[[:space:]]*) _exec="\"$APPIMAGE\" pika-backup-monitor" ;;
 		*)             _exec="$APPIMAGE pika-backup-monitor" ;;
 	esac
 
-	_desktop="[Desktop Entry]
+	# 1) XDG autostart -> daemon starts at login (scheduled backups without
+	#    opening the GUI).
+	_write_if_changed \
+	  "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/org.gnome.World.PikaBackup.Monitor.desktop" \
+	  "[Desktop Entry]
 Type=Application
 Name=Pika Backup Monitor
 Comment=Run scheduled backups for Pika Backup
@@ -62,33 +80,24 @@ X-GNOME-Autostart-Delay=90
 X-GNOME-UsesNotifications=true
 NoDisplay=true"
 
-	# Do not rewrite (and bump the mtime) if nothing changed.
-	if [ -f "$_autostart_file" ] \
-	  && [ "$(cat "$_autostart_file" 2>/dev/null)" = "$_desktop" ]; then
-		return 0
-	fi
-
-	mkdir -p "$_autostart_dir" 2>/dev/null || return 0
-	printf '%s\n' "$_desktop" > "$_autostart_file" 2>/dev/null || :
+	# 2) D-Bus activation -> the GUI's StartServiceByName succeeds. This
+	#    directory is watched by the session bus, so no reload is required.
+	_write_if_changed \
+	  "${XDG_DATA_HOME:-$HOME/.local/share}/dbus-1/services/org.gnome.World.PikaBackup.Monitor.service" \
+	  "[D-BUS Service]
+Name=org.gnome.World.PikaBackup.Monitor
+Exec=$_exec"
 }
 
-# When the daemon itself is launched, just refresh the autostart entry and
-# let AppRun.sh run the daemon (do NOT start a second copy here).
+# When the daemon itself is launched, just refresh the entries and let
+# AppRun.sh run the daemon (do NOT start a second copy here).
 if _is_monitor_launch "$1"; then
-	_install_autostart
+	_install_entries
 	return 0
 fi
 
-# Make the bundled D-Bus service discoverable, so on-demand activation works
-# too (the session bus only looks into the dirs listed in XDG_DATA_DIRS).
-if [ -d "$APPDIR/share/dbus-1/services" ]; then
-	XDG_DATA_DIRS="$APPDIR/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
-	export XDG_DATA_DIRS
-fi
-
-# Register the daemon for future logins (scheduled backups without opening
-# the GUI).
-_install_autostart
+# Register both mechanisms for this and future sessions.
+_install_entries
 
 # Start the daemon now, once per session: skip if the recorded process lives.
 _lock="${XDG_RUNTIME_DIR:-/tmp}/pika-backup-monitor.lock"
