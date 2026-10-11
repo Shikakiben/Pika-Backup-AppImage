@@ -110,7 +110,7 @@ _bus_reload() {
 _SCHEDULE_AWK='
 	/"schedule"[ \t]*:[ \t]*\{/ { insched=1; depth=0; next }
 	insched {
-		if ($0 ~ /"enabled"[ \t]*:[ \t]*true/) found=1
+		if (depth == 0 && $0 ~ /"enabled"[ \t]*:[ \t]*true/) found=1
 		depth += gsub(/\{/,"{") - gsub(/\}/,"}")
 		if (depth < 0) insched=0
 		next
@@ -186,7 +186,7 @@ if [ -f \"\$_cfg\" ]; then
 	_enabled=\$(sed 's/{/{\\n/g; s/}/\\n}/g' \"\$_cfg\" 2>/dev/null | awk '
 	/\"schedule\"[ \\t]*:[ \\t]*\\{/ { insched=1; depth=0; next }
 	insched {
-		if (\$0 ~ /\"enabled\"[ \\t]*:[ \\t]*true/) found=1
+		if (depth == 0 && \$0 ~ /\"enabled\"[ \\t]*:[ \\t]*true/) found=1
 		depth += gsub(/\\{/,\"{\") - gsub(/\\}/,\"}\")
 		if (depth < 0) insched=0
 		next
@@ -238,4 +238,5 @@ if [ -r "$_lock" ] && kill -0 "$(cat "$_lock" 2>/dev/null)" 2>/dev/null; then
 fi
 
 pika-backup-monitor >/dev/null 2>&1 &
+mkdir -p "${_lock%/*}" 2>/dev/null || :
 echo "$!" > "$_lock" 2>/dev/null || :
