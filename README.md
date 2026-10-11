@@ -19,14 +19,19 @@ AppImage made using [quick-sharun](https://github.com/pkgforge-dev/Anylinux-AppI
 
 This AppImage can work **without FUSE** at all thanks to the [uruntime](https://github.com/VHSgunzo/uruntime)
 
-This AppImage is also supplied with a self-updater by default, so any updates to this application won't be missed. The self-updater is disabled by default when AppImage managers like [am](https://github.com/ivan-hc/AM), [soar](https://github.com/pkgforge/soar) or [dbin](https://github.com/xplshn/dbin) are present, since those manage AppImage updates.
+This AppImage is also supplied with a self-updater by default, so any updates to this application won't be missed, you will be prompted for permission to check for updates and if agreed you will then be notified when a new update is available.
 
-It is possible that this appimage may fail to work with appimagelauncher, I recommend using AM:
+The self-updater is disabled by default when AppImage managers like [am](https://github.com/ivan-hc/AM), [soar](https://github.com/pkgforge/soar) or [dbin](https://github.com/xplshn/dbin) are present, since those manage AppImage updates.
+
+I recommend using AM:
 
 
 
 * [AM](https://github.com/ivan-hc/AM) `am -i pika-backup` or `appman -i pika-backup `
 
+or:
+
+* [AM-GUI](https://github.com/Shikakiben/AM-GUI)  simply search "Pika Backup" and install it
 
 
 More at: [AnyLinux-AppImages](https://pkgforge-dev.github.io/Anylinux-AppImages/)
