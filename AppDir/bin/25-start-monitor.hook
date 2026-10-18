@@ -108,7 +108,9 @@ Exec=$_monitor_exec"
 	_write_if_changed "$_service_api" "[D-BUS Service]
 Name=$_api_name
 Exec=$_app_exec --gapplication-service"
-	_bus_reload
+	# AppRun runs with `set -e`: a missing session bus (CI, headless)
+	# must not abort the hook before the wrapper/autostart are written.
+	_bus_reload || :
 
 	# Quote paths for the generated shell wrapper.
 	case "$APPIMAGE" in
